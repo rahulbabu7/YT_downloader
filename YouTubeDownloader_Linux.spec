@@ -26,4 +26,4 @@ exe = EXE(
     upx=True,
     console=False,
 )
-```
+
