@@ -4,10 +4,10 @@ on:
   push:
     branches: [ main ]
     tags:
-      - 'v*'  # Triggers on version tags like v1.0.0
+      - 'v*'
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -29,7 +29,6 @@ jobs:
     
     - name: Download FFmpeg (Windows - with GPU support)
       run: |
-        # Download FFmpeg essentials (includes NVENC, QSV, AMF)
         Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
         Expand-Archive -Path ffmpeg.zip -DestinationPath .
         New-Item -ItemType Directory -Force -Path ffmpeg_bin
@@ -49,8 +48,6 @@ jobs:
       run: |
         if (Test-Path "dist/YouTubeDownloader.exe") {
           Write-Host "✓ EXE created successfully"
-          $size = (Get-Item "dist/YouTubeDownloader.exe").Length / 1MB
-          Write-Host "File size: $([math]::Round($size, 2)) MB"
         } else {
           Write-Error "Build failed - EXE not found"
           exit 1
@@ -95,9 +92,8 @@ jobs:
       run: |
         pyinstaller YouTubeDownloader_macOS.spec
     
-    - name: Create DMG (optional)
+    - name: Create DMG
       run: |
-        # Create a simple DMG
         hdiutil create -volname "YouTube Downloader" -srcfolder dist/YouTubeDownloader.app -ov -format UDZO dist/YouTubeDownloader.dmg
     
     - name: Upload macOS app
@@ -136,7 +132,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller flet pytubefix
     
-    - name: Setup FFmpeg with GPU support
+    - name: Setup FFmpeg
       run: |
         mkdir -p ffmpeg_bin
         cp $(which ffmpeg) ffmpeg_bin/
@@ -154,48 +150,16 @@ jobs:
       run: |
         if [ -f "dist/YouTubeDownloader" ]; then
           echo "✓ Binary created successfully"
-          ls -lh dist/YouTubeDownloader
         else
-          echo "❌ Build failed - Binary not found"
+          echo "❌ Build failed"
           exit 1
         fi
-    
-    - name: Create AppImage (optional)
-      run: |
-        # Download appimagetool
-        wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-        chmod +x appimagetool-x86_64.AppImage
-        
-        # Create AppDir structure
-        mkdir -p YouTubeDownloader.AppDir/usr/bin
-        cp dist/YouTubeDownloader YouTubeDownloader.AppDir/usr/bin/
-        
-        # Create desktop file
-        cat > YouTubeDownloader.AppDir/YouTubeDownloader.desktop << EOF
-        [Desktop Entry]
-        Name=YouTube Downloader
-        Exec=YouTubeDownloader
-        Icon=YouTubeDownloader
-        Type=Application
-        Categories=Utility;
-        EOF
-        
-        # Create AppImage
-        ./appimagetool-x86_64.AppImage YouTubeDownloader.AppDir dist/YouTubeDownloader.AppImage || echo "AppImage creation skipped"
     
     - name: Upload Linux binary
       uses: actions/upload-artifact@v4
       with:
         name: YouTubeDownloader-Linux
         path: dist/YouTubeDownloader
-        retention-days: 30
-    
-    - name: Upload Linux AppImage
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: YouTubeDownloader-Linux-AppImage
-        path: dist/YouTubeDownloader.AppImage
         retention-days: 30
 
   create-release:
@@ -214,26 +178,15 @@ jobs:
           YouTubeDownloader-Windows/YouTubeDownloader.exe
           YouTubeDownloader-macOS-dmg/YouTubeDownloader.dmg
           YouTubeDownloader-Linux/YouTubeDownloader
-          YouTubeDownloader-Linux-AppImage/YouTubeDownloader.AppImage
         body: |
           ## YouTube Downloader Release
           
           ### Downloads:
-          - **Windows**: YouTubeDownloader.exe (~150 MB)
-          - **macOS**: YouTubeDownloader.dmg (~120 MB)
-          - **Linux**: YouTubeDownloader or YouTubeDownloader.AppImage (~120 MB)
-          
-          ### Features:
-          - ✅ GPU-accelerated encoding (NVIDIA, AMD, Intel)
-          - ✅ Multiple resolution support
-          - ✅ Audio + Video merging
-          - ✅ Progress tracking
+          - **Windows**: YouTubeDownloader.exe
+          - **macOS**: YouTubeDownloader.dmg
+          - **Linux**: YouTubeDownloader
           
           ### GPU Support:
-          - **Windows**: NVENC (NVIDIA), QSV (Intel), AMF (AMD)
-          - **macOS**: VideoToolbox (Apple Silicon/Intel)
-          - **Linux**: NVENC, VAAPI, QSV
-          
-          ### Requirements:
-          - GPU drivers installed for hardware acceleration
-          - Falls back to CPU if no GPU available
+          - Windows: NVENC, QSV, AMF
+          - macOS: VideoToolbox
+          - Linux: NVENC, VAAPI, QSV
