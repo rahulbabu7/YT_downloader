@@ -1,0 +1,239 @@
+name: Build Multi-Platform
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller flet pytubefix
+    
+    - name: Download FFmpeg (Windows - with GPU support)
+      run: |
+        # Download FFmpeg essentials (includes NVENC, QSV, AMF)
+        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+        Expand-Archive -Path ffmpeg.zip -DestinationPath .
+        New-Item -ItemType Directory -Force -Path ffmpeg_bin
+        Get-ChildItem -Recurse -Filter ffmpeg.exe | Select-Object -First 1 | Copy-Item -Destination ffmpeg_bin/ffmpeg.exe
+        Remove-Item ffmpeg.zip
+        Remove-Item -Recurse ffmpeg-*
+    
+    - name: Verify FFmpeg GPU encoders
+      run: |
+        .\ffmpeg_bin\ffmpeg.exe -hide_banner -encoders | Select-String "h264_nvenc|h264_qsv|h264_amf"
+    
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller YouTubeDownloader_Windows.spec
+    
+    - name: Test executable
+      run: |
+        if (Test-Path "dist/YouTubeDownloader.exe") {
+          Write-Host "✓ EXE created successfully"
+          $size = (Get-Item "dist/YouTubeDownloader.exe").Length / 1MB
+          Write-Host "File size: $([math]::Round($size, 2)) MB"
+        } else {
+          Write-Error "Build failed - EXE not found"
+          exit 1
+        }
+    
+    - name: Upload Windows artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: YouTubeDownloader-Windows
+        path: dist/YouTubeDownloader.exe
+        retention-days: 30
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller flet pytubefix
+    
+    - name: Download FFmpeg (macOS - with VideoToolbox)
+      run: |
+        brew install ffmpeg
+        mkdir -p ffmpeg_bin
+        cp $(which ffmpeg) ffmpeg_bin/
+        chmod +x ffmpeg_bin/ffmpeg
+    
+    - name: Verify FFmpeg GPU encoders
+      run: |
+        ./ffmpeg_bin/ffmpeg -hide_banner -encoders | grep "h264_videotoolbox" || echo "⚠ No VideoToolbox encoder"
+    
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller YouTubeDownloader_macOS.spec
+    
+    - name: Create DMG (optional)
+      run: |
+        # Create a simple DMG
+        hdiutil create -volname "YouTube Downloader" -srcfolder dist/YouTubeDownloader.app -ov -format UDZO dist/YouTubeDownloader.dmg
+    
+    - name: Upload macOS app
+      uses: actions/upload-artifact@v4
+      with:
+        name: YouTubeDownloader-macOS-app
+        path: dist/YouTubeDownloader.app
+        retention-days: 30
+    
+    - name: Upload macOS DMG
+      uses: actions/upload-artifact@v4
+      with:
+        name: YouTubeDownloader-macOS-dmg
+        path: dist/YouTubeDownloader.dmg
+        retention-days: 30
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller flet pytubefix
+    
+    - name: Setup FFmpeg with GPU support
+      run: |
+        mkdir -p ffmpeg_bin
+        cp $(which ffmpeg) ffmpeg_bin/
+        chmod +x ffmpeg_bin/ffmpeg
+    
+    - name: Verify FFmpeg GPU encoders
+      run: |
+        ./ffmpeg_bin/ffmpeg -hide_banner -encoders | grep -E "h264_nvenc|h264_vaapi|h264_qsv" || echo "⚠ No GPU encoders (CPU will be used)"
+    
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller YouTubeDownloader_Linux.spec
+    
+    - name: Test executable
+      run: |
+        if [ -f "dist/YouTubeDownloader" ]; then
+          echo "✓ Binary created successfully"
+          ls -lh dist/YouTubeDownloader
+        else
+          echo "❌ Build failed - Binary not found"
+          exit 1
+        fi
+    
+    - name: Create AppImage (optional)
+      run: |
+        # Download appimagetool
+        wget https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+        chmod +x appimagetool-x86_64.AppImage
+        
+        # Create AppDir structure
+        mkdir -p YouTubeDownloader.AppDir/usr/bin
+        cp dist/YouTubeDownloader YouTubeDownloader.AppDir/usr/bin/
+        
+        # Create desktop file
+        cat > YouTubeDownloader.AppDir/YouTubeDownloader.desktop << EOF
+        [Desktop Entry]
+        Name=YouTube Downloader
+        Exec=YouTubeDownloader
+        Icon=YouTubeDownloader
+        Type=Application
+        Categories=Utility;
+        EOF
+        
+        # Create AppImage
+        ./appimagetool-x86_64.AppImage YouTubeDownloader.AppDir dist/YouTubeDownloader.AppImage || echo "AppImage creation skipped"
+    
+    - name: Upload Linux binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: YouTubeDownloader-Linux
+        path: dist/YouTubeDownloader
+        retention-days: 30
+    
+    - name: Upload Linux AppImage
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: YouTubeDownloader-Linux-AppImage
+        path: dist/YouTubeDownloader.AppImage
+        retention-days: 30
+
+  create-release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          YouTubeDownloader-Windows/YouTubeDownloader.exe
+          YouTubeDownloader-macOS-dmg/YouTubeDownloader.dmg
+          YouTubeDownloader-Linux/YouTubeDownloader
+          YouTubeDownloader-Linux-AppImage/YouTubeDownloader.AppImage
+        body: |
+          ## YouTube Downloader Release
+          
+          ### Downloads:
+          - **Windows**: YouTubeDownloader.exe (~150 MB)
+          - **macOS**: YouTubeDownloader.dmg (~120 MB)
+          - **Linux**: YouTubeDownloader or YouTubeDownloader.AppImage (~120 MB)
+          
+          ### Features:
+          - ✅ GPU-accelerated encoding (NVIDIA, AMD, Intel)
+          - ✅ Multiple resolution support
+          - ✅ Audio + Video merging
+          - ✅ Progress tracking
+          
+          ### GPU Support:
+          - **Windows**: NVENC (NVIDIA), QSV (Intel), AMF (AMD)
+          - **macOS**: VideoToolbox (Apple Silicon/Intel)
+          - **Linux**: NVENC, VAAPI, QSV
+          
+          ### Requirements:
+          - GPU drivers installed for hardware acceleration
+          - Falls back to CPU if no GPU available
