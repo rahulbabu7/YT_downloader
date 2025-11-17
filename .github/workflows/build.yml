@@ -9,6 +9,11 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# Add permissions for the workflow
+permissions:
+  contents: write
+  packages: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -166,13 +171,16 @@ jobs:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    # Add permissions specifically for this job
+    permissions:
+      contents: write
     
     steps:
     - name: Download all artifacts
       uses: actions/download-artifact@v4
     
     - name: Create Release
-      uses: softprops/action-gh-release@v1
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           YouTubeDownloader-Windows/YouTubeDownloader.exe
@@ -190,3 +198,6 @@ jobs:
           - Windows: NVENC, QSV, AMF
           - macOS: VideoToolbox
           - Linux: NVENC, VAAPI, QSV
+        fail_on_unmatched_files: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
