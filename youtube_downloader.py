@@ -81,7 +81,7 @@ def main(page: ft.Page):
                                    timeout=5)
             if result.returncode == 0:
                 print(f"✅ FFmpeg found at: {FFMPEG_PATH}")
-                print(f"   Version: {result.stdout.split('\\n')[0]}")
+                # print(f"   Version: {result.stdout.split('\\n')[0]}")
                 print(f"   Encoder: {gpu_info['name']} ({gpu_info['codec']})")
                 return True
             else:
