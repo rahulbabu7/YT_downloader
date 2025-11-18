@@ -1,7 +1,7 @@
 [project]
-name = "flet-learning"
+name = "YoutubeDownloader"
 version = "0.1.0"
-description = "Learning Flet"
+description = "Youtube Video Downloader"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

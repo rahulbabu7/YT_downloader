@@ -93,7 +93,7 @@ The app automatically detects and uses available GPU encoders.
 ```bash
 # Clone the repository
 git clone https://github.com//rahulbabu7/YT_downloader.git
-cd YOUR_REPO
+cd YT_downloader
 
 # Install dependencies
 pip install PySide6 pytubefix pyinstaller
