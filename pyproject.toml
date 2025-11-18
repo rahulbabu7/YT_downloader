@@ -5,7 +5,7 @@ description = "Learning Flet"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "flet[all]>=0.28.3",
     "imageio-ffmpeg>=0.6.0",
+    "pyside6>=6.10.0",
     "pytubefix>=10.3.4",
 ]

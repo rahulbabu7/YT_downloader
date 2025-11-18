@@ -30,7 +30,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller flet pytubefix
+        pip install pyinstaller PySide6 pytubefix
     
     - name: Build with PyInstaller
       run: |
@@ -67,7 +67,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller flet pytubefix
+        pip install pyinstaller PySide6 pytubefix
     
     - name: Build with PyInstaller
       run: |
@@ -103,10 +103,15 @@ jobs:
       with:
         python-version: '3.11'
     
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxcb-xinerama0 libxcb-cursor0
+    
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller flet pytubefix
+        pip install pyinstaller PySide6 pytubefix
     
     - name: Build with PyInstaller
       run: |
@@ -156,31 +161,16 @@ jobs:
           - **Linux**: YouTubeDownloader
           
           ### Requirements:
-          **FFmpeg must be installed separately and available in your system PATH**
+          **FFmpeg must be installed separately for video merging:**
           
-          #### Installing FFmpeg:
-          
-          **Windows:**
-          - Download from https://www.gyan.dev/ffmpeg/builds/
-          - Extract and add to system PATH
-          - Or use: `winget install Gyan.FFmpeg`
-          
-          **macOS:**
-          ```bash
-          brew install ffmpeg
-          ```
-          
-          **Linux:**
-          ```bash
-          sudo apt install ffmpeg  # Debian/Ubuntu
-          sudo dnf install ffmpeg  # Fedora
-          sudo pacman -S ffmpeg    # Arch
-          ```
+          - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) or install via `winget install ffmpeg`
+          - **macOS**: Install via Homebrew: `brew install ffmpeg`
+          - **Linux**: Install via package manager: `sudo apt install ffmpeg` (Ubuntu/Debian) or `sudo dnf install ffmpeg` (Fedora)
           
           ### GPU Support:
-          FFmpeg will automatically use GPU encoders if available:
-          - Windows: NVENC, QSV, AMF
-          - macOS: VideoToolbox
+          FFmpeg will automatically use GPU encoding if available:
+          - Windows: NVENC (NVIDIA), QSV (Intel), AMF (AMD)
+          - macOS: VideoToolbox (Apple Silicon/Intel)
           - Linux: NVENC, VAAPI, QSV
         fail_on_unmatched_files: false
       env:
