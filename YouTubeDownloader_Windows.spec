@@ -1,9 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-
 a = Analysis(
     ['youtube_downloader.py'],
     pathex=[],
-    binaries=[('ffmpeg_bin/ffmpeg.exe', '.')],
+    binaries=[],
     datas=[],
     hiddenimports=['pytubefix', 'flet'],
     hookspath=[],
@@ -11,9 +10,7 @@ a = Analysis(
     excludes=[],
     noarchive=False,
 )
-
 pyz = PYZ(a.pure)
-
 exe = EXE(
     pyz,
     a.scripts,

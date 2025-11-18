@@ -32,19 +32,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller flet pytubefix
     
-    - name: Download FFmpeg (Windows - with GPU support)
-      run: |
-        Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
-        Expand-Archive -Path ffmpeg.zip -DestinationPath .
-        New-Item -ItemType Directory -Force -Path ffmpeg_bin
-        Get-ChildItem -Recurse -Filter ffmpeg.exe | Select-Object -First 1 | Copy-Item -Destination ffmpeg_bin/ffmpeg.exe
-        Remove-Item ffmpeg.zip
-        Remove-Item -Recurse ffmpeg-*
-    
-    - name: Verify FFmpeg GPU encoders
-      run: |
-        .\ffmpeg_bin\ffmpeg.exe -hide_banner -encoders | Select-String "h264_nvenc|h264_qsv|h264_amf"
-    
     - name: Build with PyInstaller
       run: |
         pyinstaller YouTubeDownloader_Windows.spec
@@ -82,17 +69,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller flet pytubefix
     
-    - name: Download FFmpeg (macOS - with VideoToolbox)
-      run: |
-        brew install ffmpeg
-        mkdir -p ffmpeg_bin
-        cp $(which ffmpeg) ffmpeg_bin/
-        chmod +x ffmpeg_bin/ffmpeg
-    
-    - name: Verify FFmpeg GPU encoders
-      run: |
-        ./ffmpeg_bin/ffmpeg -hide_banner -encoders | grep "h264_videotoolbox" || echo "⚠ No VideoToolbox encoder"
-    
     - name: Build with PyInstaller
       run: |
         pyinstaller YouTubeDownloader_macOS.spec
@@ -127,25 +103,10 @@ jobs:
       with:
         python-version: '3.11'
     
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y ffmpeg
-    
     - name: Install Python dependencies
       run: |
         python -m pip install --upgrade pip
         pip install pyinstaller flet pytubefix
-    
-    - name: Setup FFmpeg
-      run: |
-        mkdir -p ffmpeg_bin
-        cp $(which ffmpeg) ffmpeg_bin/
-        chmod +x ffmpeg_bin/ffmpeg
-    
-    - name: Verify FFmpeg GPU encoders
-      run: |
-        ./ffmpeg_bin/ffmpeg -hide_banner -encoders | grep -E "h264_nvenc|h264_vaapi|h264_qsv" || echo "⚠ No GPU encoders (CPU will be used)"
     
     - name: Build with PyInstaller
       run: |
@@ -194,7 +155,30 @@ jobs:
           - **macOS**: YouTubeDownloader.dmg
           - **Linux**: YouTubeDownloader
           
+          ### Requirements:
+          **FFmpeg must be installed separately and available in your system PATH**
+          
+          #### Installing FFmpeg:
+          
+          **Windows:**
+          - Download from https://www.gyan.dev/ffmpeg/builds/
+          - Extract and add to system PATH
+          - Or use: `winget install Gyan.FFmpeg`
+          
+          **macOS:**
+          ```bash
+          brew install ffmpeg
+          ```
+          
+          **Linux:**
+          ```bash
+          sudo apt install ffmpeg  # Debian/Ubuntu
+          sudo dnf install ffmpeg  # Fedora
+          sudo pacman -S ffmpeg    # Arch
+          ```
+          
           ### GPU Support:
+          FFmpeg will automatically use GPU encoders if available:
           - Windows: NVENC, QSV, AMF
           - macOS: VideoToolbox
           - Linux: NVENC, VAAPI, QSV
