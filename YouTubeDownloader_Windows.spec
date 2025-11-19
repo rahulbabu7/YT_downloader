@@ -1,12 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
+import certifi
 
 block_cipher = None
 
 a = Analysis(
-    ['main.py'],  # Your main Python file
+    ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        (certifi.where(), 'certifi'),  # Bundle SSL certificates
+    ],
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui',
@@ -16,6 +19,7 @@ a = Analysis(
         'pytubefix.extract',
         'pytubefix.request',
         'pytubefix.monostate',
+        'certifi',
     ],
     hookspath=[],
     hooksconfig={},
@@ -43,7 +47,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # No console window
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

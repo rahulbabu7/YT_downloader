@@ -1,12 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
+import certifi
 
 block_cipher = None
 
 a = Analysis(
-    ['main.py'],  # Your main Python file
+    ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        (certifi.where(), 'certifi'),  # Add this line
+    ],
     hiddenimports=[
         'PySide6.QtCore',
         'PySide6.QtGui',
@@ -16,6 +19,7 @@ a = Analysis(
         'pytubefix.extract',
         'pytubefix.request',
         'pytubefix.monostate',
+        'certifi',  # Add this
     ],
     hookspath=[],
     hooksconfig={},

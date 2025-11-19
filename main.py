@@ -4,6 +4,19 @@ import math
 import os
 import subprocess
 import platform
+import certifi
+
+# Fix SSL certificate verification for PyInstaller
+if getattr(sys, 'frozen', False):
+    # Running as compiled executable
+    os.environ['SSL_CERT_FILE'] = os.path.join(sys._MEIPASS, 'certifi', 'cacert.pem')
+    os.environ['REQUESTS_CA_BUNDLE'] = os.path.join(sys._MEIPASS, 'certifi', 'cacert.pem')
+else:
+    # Running as script
+    os.environ['SSL_CERT_FILE'] = certifi.where()
+    os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
+
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QComboBox, QLabel, QProgressBar,
