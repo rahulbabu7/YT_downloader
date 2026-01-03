@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "certifi>=2025.11.12",
+    "pyinstaller>=6.17.0",
     "pyside6>=6.10.0",
     "pytubefix>=10.3.4",
 ]
