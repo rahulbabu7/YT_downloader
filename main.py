@@ -21,11 +21,11 @@ else:
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QComboBox, QLabel, QProgressBar,
-    QCheckBox, QFileDialog, QMessageBox
+    QCheckBox, QFileDialog, QMessageBox, QTextEdit
 )
 from PySide6.QtCore import Qt, Signal, QObject
 from PySide6.QtGui import QFont
-from pytubefix import YouTube
+from pytubefix import YouTube, Playlist
 
 
 # Signal emitter for thread-safe UI updates
@@ -34,13 +34,15 @@ class DownloadSignals(QObject):
     status_update = Signal(str)
     enable_buttons = Signal(bool, bool, bool)
     resolutions_fetched = Signal(list, dict)
+    playlist_progress = Signal(int, int, str)  # current, total, video_title
+    log_message = Signal(str)
 
 
 class YouTubeDownloaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YouTube Downloader")
-        self.setMinimumSize(800, 400)
+        self.setMinimumSize(900, 550)
 
         # Signals for thread communication
         self.signals = DownloadSignals()
@@ -48,10 +50,14 @@ class YouTubeDownloaderWindow(QMainWindow):
         self.signals.status_update.connect(self.update_status)
         self.signals.enable_buttons.connect(self.set_buttons_state)
         self.signals.resolutions_fetched.connect(self.populate_resolutions)
+        self.signals.playlist_progress.connect(self.update_playlist_progress)
+        self.signals.log_message.connect(self.add_log_message)
 
         # Storage
         self.available_streams = {}
         self.current_yt = None
+        self.current_playlist = None
+        self.is_playlist = False
         self.download_dir = os.path.expanduser("~/Downloads")
 
         # Detect FFmpeg and GPU
@@ -72,11 +78,11 @@ class YouTubeDownloaderWindow(QMainWindow):
         # URL input row
         url_layout = QHBoxLayout()
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Enter YouTube URL")
+        self.url_input.setPlaceholderText("Enter YouTube URL or Playlist URL")
         self.url_input.setMinimumHeight(35)
         url_layout.addWidget(self.url_input)
 
-        self.fetch_button = QPushButton("Fetch Resolutions")
+        self.fetch_button = QPushButton("Fetch Info")
         self.fetch_button.setMinimumWidth(150)
         self.fetch_button.clicked.connect(self.fetch_resolutions_clicked)
         url_layout.addWidget(self.fetch_button)
@@ -119,6 +125,12 @@ class YouTubeDownloaderWindow(QMainWindow):
 
         main_layout.addLayout(resolution_layout)
 
+        # Playlist progress label
+        self.playlist_label = QLabel("")
+        self.playlist_label.setVisible(False)
+        self.playlist_label.setStyleSheet("color: blue; font-weight: bold;")
+        main_layout.addWidget(self.playlist_label)
+
         # Progress bar and percentage
         progress_layout = QHBoxLayout()
         self.progress_bar = QProgressBar()
@@ -137,6 +149,16 @@ class YouTubeDownloaderWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         main_layout.addWidget(self.status_label)
 
+        # Log text area
+        log_label = QLabel("Download Log:")
+        main_layout.addWidget(log_label)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(100)
+        self.log_text.setStyleSheet("background-color: #f5f5f5; font-family: monospace; font-size: 9pt;")
+        main_layout.addWidget(self.log_text)
+
         # FFmpeg status
         encoder_icon = "🎮" if self.gpu_info['codec'] != 'libx264' else "💻"
         if self.ffmpeg_available:
@@ -153,89 +175,111 @@ class YouTubeDownloaderWindow(QMainWindow):
         # Add stretch to push everything to the top
         main_layout.addStretch()
 
+    def add_log_message(self, message):
+        """Add message to log"""
+        self.log_text.append(message)
+        # Auto-scroll to bottom
+        self.log_text.verticalScrollBar().setValue(
+            self.log_text.verticalScrollBar().maximum()
+        )
+
+    def update_playlist_progress(self, current, total, title):
+        """Update playlist progress"""
+        self.playlist_label.setText(f"Playlist: Downloading {current}/{total} - {title}")
+        self.playlist_label.setVisible(True)
+
     def find_ffmpeg(self):
-        """Find FFmpeg - prioritize system FFmpeg"""
-        # Method 1: Check if 'ffmpeg' is in system PATH
-        ffmpeg_path = shutil.which('ffmpeg')
-        if ffmpeg_path:
-            print(f"✅ Found system FFmpeg at: {ffmpeg_path}")
-            return ffmpeg_path
+            """Find FFmpeg - prioritize bundled FFmpeg, then system FFmpeg"""
+            # Method 1: Check for bundled FFmpeg (PyInstaller)
+            if getattr(sys, 'frozen', False):
+                # Running as compiled executable
+                bundle_dir = sys._MEIPASS
+                bundled_ffmpeg = os.path.join(bundle_dir, 'ffmpeg.exe' if platform.system() == 'Windows' else 'ffmpeg')
+                if os.path.isfile(bundled_ffmpeg):
+                    print(f"✅ Found bundled FFmpeg at: {bundled_ffmpeg}")
+                    return bundled_ffmpeg
 
-        # Method 2: Try common installation paths
-        common_paths = []
-        if platform.system() == 'Windows':
-            common_paths = [
-                r'C:\ffmpeg\bin\ffmpeg.exe',
-                r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
-                r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
-            ]
-        elif platform.system() == 'Darwin':  # macOS
-            common_paths = [
-                '/usr/local/bin/ffmpeg',
-                '/opt/homebrew/bin/ffmpeg',
-                '/opt/local/bin/ffmpeg',
-            ]
-        else:  # Linux
-            common_paths = [
-                '/usr/bin/ffmpeg',
-                '/usr/local/bin/ffmpeg',
-                '/snap/bin/ffmpeg',
-            ]
+            # Method 2: Check if 'ffmpeg' is in system PATH
+            ffmpeg_path = shutil.which('ffmpeg')
+            if ffmpeg_path:
+                print(f"✅ Found system FFmpeg at: {ffmpeg_path}")
+                return ffmpeg_path
 
-        for path in common_paths:
-            if os.path.isfile(path):
-                print(f"✅ Found system FFmpeg at: {path}")
-                return path
+            # Method 3: Try common installation paths
+            common_paths = []
+            if platform.system() == 'Windows':
+                common_paths = [
+                    r'C:\ffmpeg\bin\ffmpeg.exe',
+                    r'C:\Program Files\ffmpeg\bin\ffmpeg.exe',
+                    r'C:\Program Files (x86)\ffmpeg\bin\ffmpeg.exe',
+                ]
+            elif platform.system() == 'Darwin':  # macOS
+                common_paths = [
+                    '/usr/local/bin/ffmpeg',
+                    '/opt/homebrew/bin/ffmpeg',
+                    '/opt/local/bin/ffmpeg',
+                ]
+            else:  # Linux
+                common_paths = [
+                    '/usr/bin/ffmpeg',
+                    '/usr/local/bin/ffmpeg',
+                    '/snap/bin/ffmpeg',
+                ]
 
-        # Method 3: Fall back to imageio-ffmpeg
-        try:
-            import imageio_ffmpeg
-            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
-            print(f"ℹ️ Using imageio-ffmpeg (no GPU support): {ffmpeg_path}")
-            return ffmpeg_path
-        except ImportError:
-            print("❌ imageio-ffmpeg not installed")
+            for path in common_paths:
+                if os.path.isfile(path):
+                    print(f"✅ Found system FFmpeg at: {path}")
+                    return path
 
-        # Method 4: Return 'ffmpeg' and hope it's in PATH
-        print("⚠️ FFmpeg not found, will attempt to use 'ffmpeg' command")
-        return 'ffmpeg'
+            # Method 3: Fall back to imageio-ffmpeg
+            try:
+                import imageio_ffmpeg
+                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+                print(f"ℹ️ Using imageio-ffmpeg (no GPU support): {ffmpeg_path}")
+                return ffmpeg_path
+            except ImportError:
+                print("❌ imageio-ffmpeg not installed")
+
+            # Method 4: Return 'ffmpeg' and hope it's in PATH
+            print("⚠️ FFmpeg not found, will attempt to use 'ffmpeg' command")
+            return 'ffmpeg'
 
     def test_ffmpeg(self):
-        """Test if FFmpeg is working"""
-        if not self.ffmpeg_path:
-            return False
-
-        try:
-            # Use a short timeout and suppress output
-            result = subprocess.run(
-                [self.ffmpeg_path, '-version'],
-                capture_output=True,
-                text=True,
-                timeout=3,
-                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
-            )
-
-            if result.returncode == 0:
-                print(f"✅ FFmpeg is working!")
-                print(f"   Path: {self.ffmpeg_path}")
-                # Print first line of version info
-                if result.stdout:
-                    first_line = result.stdout.split('\n')[0]
-                    print(f"   Version: {first_line}")
-                return True
-            else:
-                print(f"❌ FFmpeg returned error code: {result.returncode}")
+            """Test if FFmpeg is working"""
+            if not self.ffmpeg_path:
                 return False
 
-        except FileNotFoundError:
-            print(f"❌ FFmpeg not found at: {self.ffmpeg_path}")
-            return False
-        except subprocess.TimeoutExpired:
-            print(f"⚠️ FFmpeg test timed out")
-            return False
-        except Exception as e:
-            print(f"❌ FFmpeg test failed: {e}")
-            return False
+            try:
+                # Use a short timeout and suppress output
+                result = subprocess.run(
+                    [self.ffmpeg_path, '-version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                    creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+                )
+
+                if result.returncode == 0:
+                    print(f"✅ FFmpeg is working!")
+                    print(f"   Path: {self.ffmpeg_path}")
+                    # Print first line of version info
+                    if result.stdout:
+                        first_line = result.stdout.split('\n')[0]
+                        print(f"   Version: {first_line}")
+                    return True
+                else:
+                    print(f"❌ FFmpeg returned error code: {result.returncode}")
+                    return False
+
+            except FileNotFoundError:
+                print(f"❌ FFmpeg not found at: {self.ffmpeg_path}")
+                return False
+            except subprocess.TimeoutExpired:
+                print(f"⚠️ FFmpeg test timed out")
+                return False
+            except Exception as e:
+                print(f"❌ FFmpeg test failed: {e}")
+                return False
 
     def detect_gpu_encoder(self):
         """Detect available GPU encoder"""
@@ -321,9 +365,8 @@ class YouTubeDownloaderWindow(QMainWindow):
                 percent = math.floor(downloaded / total * 100)
 
             self.signals.progress_update.emit(percent, f"{percent}%")
-            self.signals.status_update.emit(f"Downloading... {percent}%")
         except Exception as ex:
-            self.signals.status_update.emit(f"Progress update error: {ex}")
+            pass
 
     def fetch_resolutions_clicked(self):
         """Handle fetch button click"""
@@ -334,7 +377,9 @@ class YouTubeDownloaderWindow(QMainWindow):
 
         self.signals.enable_buttons.emit(False, False, False)
         self.resolution_combo.clear()
-        self.signals.status_update.emit("Fetching video information...")
+        self.playlist_label.setVisible(False)
+        self.log_text.clear()
+        self.signals.status_update.emit("Fetching information...")
         self.signals.progress_update.emit(0, "0%")
 
         thread = threading.Thread(target=self.fetch_resolutions, args=(url,), daemon=True)
@@ -343,85 +388,123 @@ class YouTubeDownloaderWindow(QMainWindow):
     def fetch_resolutions(self, url):
         """Fetch available resolutions (runs in thread)"""
         try:
-            yt = YouTube(url, on_progress_callback=self.on_progress)
-            self.current_yt = yt
+            # Check if URL is a playlist
+            if 'list=' in url or '/playlist' in url:
+                self.is_playlist = True
+                self.signals.log_message.emit("📋 Detected playlist URL")
+                self.signals.status_update.emit("Loading playlist...")
 
-            progressive_streams = yt.streams.filter(progressive=True, file_extension="mp4")
-            adaptive_streams_mp4 = yt.streams.filter(adaptive=True, type="video", file_extension="mp4")
-            adaptive_streams_webm = yt.streams.filter(adaptive=True, type="video", file_extension="webm")
+                playlist = Playlist(url)
+                self.current_playlist = playlist
 
-            adaptive_streams = list(adaptive_streams_mp4) + list(adaptive_streams_webm)
+                video_count = len(playlist.video_urls)
+                self.signals.log_message.emit(f"📋 Found {video_count} videos in playlist: {playlist.title}")
+                self.signals.status_update.emit(f"Playlist ready: {video_count} videos")
 
-            if not progressive_streams and not adaptive_streams:
-                self.signals.status_update.emit("No suitable streams found.")
-                self.signals.enable_buttons.emit(True, False, False)
-                return
+                # For playlist, we'll use a default resolution selection
+                options = [
+                    "1080p - Best Quality (adaptive)",
+                    "720p - High Quality (adaptive)",
+                    "480p - Medium Quality (adaptive)",
+                    "360p - Low Quality (adaptive)",
+                    "Best Available Progressive (video+audio)"
+                ]
 
-            available_streams = {}
-            added_resolutions = set()
-            show_duplicates = self.show_all_checkbox.isChecked()
+                self.available_streams = {}
+                for opt in options:
+                    self.available_streams[opt] = {'type': 'playlist_option', 'option': opt}
 
-            # Sort adaptive streams
-            adaptive_streams.sort(key=lambda s: (
-                -int(s.resolution.replace('p', '')) if s.resolution else 0,
-                0 if 'mp4' in s.mime_type else 1
-            ))
+                self.signals.resolutions_fetched.emit(options, self.available_streams)
+                self.signals.status_update.emit(
+                    f"✅ Playlist loaded: {video_count} videos. Select quality and click Download."
+                )
 
-            options = []
+            else:
+                # Single video
+                self.is_playlist = False
+                self.current_playlist = None
 
-            # Add adaptive streams
-            for stream in adaptive_streams:
-                resolution = stream.resolution
-                if resolution:
-                    filesize_mb = stream.filesize / (1024 * 1024) if stream.filesize else 0
-                    fps = stream.fps if hasattr(stream, 'fps') else 30
-                    file_ext = stream.mime_type.split('/')[-1].split(';')[0]
+                yt = YouTube(url, on_progress_callback=self.on_progress)
+                self.current_yt = yt
 
-                    if not show_duplicates and resolution in added_resolutions:
-                        continue
+                progressive_streams = yt.streams.filter(progressive=True, file_extension="mp4")
+                adaptive_streams_mp4 = yt.streams.filter(adaptive=True, type="video", file_extension="mp4")
+                adaptive_streams_webm = yt.streams.filter(adaptive=True, type="video", file_extension="webm")
 
-                    if show_duplicates:
-                        label = f"{resolution} {fps}fps - {filesize_mb:.1f} MB [{file_ext}] (itag: {stream.itag})"
-                    else:
-                        label = f"{resolution} {fps}fps - {filesize_mb:.1f} MB (requires audio merge)"
+                adaptive_streams = list(adaptive_streams_mp4) + list(adaptive_streams_webm)
 
-                    available_streams[label] = {
-                        'type': 'adaptive',
-                        'video_stream': stream,
-                        'resolution': resolution,
-                        'format': file_ext
-                    }
-                    options.append(label)
-                    added_resolutions.add(resolution)
+                if not progressive_streams and not adaptive_streams:
+                    self.signals.status_update.emit("No suitable streams found.")
+                    self.signals.enable_buttons.emit(True, False, False)
+                    return
 
-            # Add progressive streams
-            for stream in progressive_streams:
-                resolution = stream.resolution
-                if resolution:
-                    filesize_mb = stream.filesize / (1024 * 1024) if stream.filesize else 0
+                available_streams = {}
+                added_resolutions = set()
+                show_duplicates = self.show_all_checkbox.isChecked()
 
-                    if not show_duplicates and resolution in added_resolutions:
-                        continue
+                # Sort adaptive streams
+                adaptive_streams.sort(key=lambda s: (
+                    -int(s.resolution.replace('p', '')) if s.resolution else 0,
+                    0 if 'mp4' in s.mime_type else 1
+                ))
 
-                    if show_duplicates:
-                        label = f"{resolution} - {filesize_mb:.1f} MB [mp4] (itag: {stream.itag})"
-                    else:
-                        label = f"{resolution} - {filesize_mb:.1f} MB ✅ (video + audio)"
+                options = []
 
-                    available_streams[label] = {
-                        'type': 'progressive',
-                        'stream': stream
-                    }
-                    options.append(label)
-                    added_resolutions.add(resolution)
+                # Add adaptive streams
+                for stream in adaptive_streams:
+                    resolution = stream.resolution
+                    if resolution:
+                        filesize_mb = stream.filesize / (1024 * 1024) if stream.filesize else 0
+                        fps = stream.fps if hasattr(stream, 'fps') else 30
+                        file_ext = stream.mime_type.split('/')[-1].split(';')[0]
 
-            self.signals.resolutions_fetched.emit(options, available_streams)
-            self.signals.status_update.emit(
-                f"Found {len(available_streams)} resolutions. Green ✅ = audio included, others need FFmpeg."
-            )
+                        if not show_duplicates and resolution in added_resolutions:
+                            continue
+
+                        if show_duplicates:
+                            label = f"{resolution} {fps}fps - {filesize_mb:.1f} MB [{file_ext}] (itag: {stream.itag})"
+                        else:
+                            label = f"{resolution} {fps}fps - {filesize_mb:.1f} MB (requires audio merge)"
+
+                        available_streams[label] = {
+                            'type': 'adaptive',
+                            'video_stream': stream,
+                            'resolution': resolution,
+                            'format': file_ext
+                        }
+                        options.append(label)
+                        added_resolutions.add(resolution)
+
+                # Add progressive streams
+                for stream in progressive_streams:
+                    resolution = stream.resolution
+                    if resolution:
+                        filesize_mb = stream.filesize / (1024 * 1024) if stream.filesize else 0
+
+                        if not show_duplicates and resolution in added_resolutions:
+                            continue
+
+                        if show_duplicates:
+                            label = f"{resolution} - {filesize_mb:.1f} MB [mp4] (itag: {stream.itag})"
+                        else:
+                            label = f"{resolution} - {filesize_mb:.1f} MB ✅ (video + audio)"
+
+                        available_streams[label] = {
+                            'type': 'progressive',
+                            'stream': stream
+                        }
+                        options.append(label)
+                        added_resolutions.add(resolution)
+
+                self.signals.resolutions_fetched.emit(options, available_streams)
+                self.signals.status_update.emit(
+                    f"Found {len(available_streams)} resolutions. Green ✅ = audio included, others need FFmpeg."
+                )
+                self.signals.log_message.emit(f"✅ Video info fetched: {yt.title}")
 
         except Exception as ex:
-            self.signals.status_update.emit(f"Error fetching resolutions: {ex}")
+            self.signals.status_update.emit(f"Error fetching information: {ex}")
+            self.signals.log_message.emit(f"❌ Error: {ex}")
             self.signals.enable_buttons.emit(True, False, False)
 
     def download_clicked(self):
@@ -432,16 +515,180 @@ class YouTubeDownloaderWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Please select a resolution.")
             return
 
-        if not self.current_yt:
-            QMessageBox.warning(self, "Error", "Please fetch resolutions first.")
+        if not self.is_playlist and not self.current_yt:
+            QMessageBox.warning(self, "Error", "Please fetch information first.")
+            return
+
+        if self.is_playlist and not self.current_playlist:
+            QMessageBox.warning(self, "Error", "Please fetch playlist first.")
             return
 
         self.signals.enable_buttons.emit(False, False, True)
         self.signals.status_update.emit("Preparing download...")
         self.signals.progress_update.emit(0, "0%")
 
-        thread = threading.Thread(target=self.do_download, args=(selected,), daemon=True)
+        if self.is_playlist:
+            thread = threading.Thread(target=self.download_playlist, args=(selected,), daemon=True)
+        else:
+            thread = threading.Thread(target=self.do_download, args=(selected,), daemon=True)
+
         thread.start()
+
+    def download_playlist(self, quality_option):
+        """Download entire playlist"""
+        try:
+            video_urls = self.current_playlist.video_urls
+            total_videos = len(video_urls)
+
+            self.signals.log_message.emit(f"\n{'='*50}")
+            self.signals.log_message.emit(f"📋 Starting playlist download: {total_videos} videos")
+            self.signals.log_message.emit(f"{'='*50}\n")
+
+            successful = 0
+            failed = 0
+
+            for idx, video_url in enumerate(video_urls, 1):
+                try:
+                    # Create YouTube object for this video
+                    yt = YouTube(video_url, on_progress_callback=self.on_progress)
+                    self.current_yt = yt
+
+                    title = yt.title[:50]  # Truncate long titles
+                    self.signals.playlist_progress.emit(idx, total_videos, title)
+                    self.signals.log_message.emit(f"\n[{idx}/{total_videos}] 📹 {title}")
+                    self.signals.status_update.emit(f"Downloading {idx}/{total_videos}: {title}")
+
+                    # Determine which stream to download based on quality option
+                    stream = None
+                    stream_type = 'progressive'
+
+                    if 'Progressive' in quality_option:
+                        # Best progressive stream
+                        stream = yt.streams.filter(progressive=True, file_extension="mp4").order_by('resolution').desc().first()
+                        stream_type = 'progressive'
+                    else:
+                        # Extract resolution from option
+                        resolution = quality_option.split('p')[0] + 'p'
+
+                        # Try to get adaptive stream
+                        stream = yt.streams.filter(
+                            adaptive=True,
+                            type="video",
+                            resolution=resolution
+                        ).first()
+
+                        if not stream:
+                            # Fall back to closest resolution
+                            stream = yt.streams.filter(adaptive=True, type="video").order_by('resolution').desc().first()
+
+                        stream_type = 'adaptive'
+
+                    if not stream:
+                        self.signals.log_message.emit(f"   ❌ No suitable stream found")
+                        failed += 1
+                        continue
+
+                    # Download based on stream type
+                    if stream_type == 'progressive':
+                        video_file = stream.download(output_path=self.download_dir)
+                        self.signals.log_message.emit(f"   ✅ Downloaded (progressive)")
+                        successful += 1
+                    else:
+                        # Download video
+                        video_file = stream.download(
+                            output_path=self.download_dir,
+                            filename_prefix=f"video_{idx}_"
+                        )
+
+                        # Download audio
+                        audio_stream = yt.streams.filter(only_audio=True).order_by("abr").desc().first()
+                        if audio_stream:
+                            audio_file = audio_stream.download(
+                                output_path=self.download_dir,
+                                filename_prefix=f"audio_{idx}_"
+                            )
+
+                            # Merge
+                            self.merge_video_audio_silent(video_file, audio_file, idx)
+                            self.signals.log_message.emit(f"   ✅ Downloaded & merged")
+                            successful += 1
+                        else:
+                            self.signals.log_message.emit(f"   ⚠️ Downloaded (no audio available)")
+                            successful += 1
+
+                    self.signals.progress_update.emit(0, "0%")
+
+                except Exception as e:
+                    self.signals.log_message.emit(f"   ❌ Failed: {str(e)[:100]}")
+                    failed += 1
+                    continue
+
+            # Summary
+            self.signals.log_message.emit(f"\n{'='*50}")
+            self.signals.log_message.emit(f"✅ Playlist download complete!")
+            self.signals.log_message.emit(f"   Successful: {successful}/{total_videos}")
+            if failed > 0:
+                self.signals.log_message.emit(f"   Failed: {failed}/{total_videos}")
+            self.signals.log_message.emit(f"{'='*50}")
+
+            self.signals.status_update.emit(
+                f"✅ Playlist complete: {successful} downloaded, {failed} failed"
+            )
+            self.signals.progress_update.emit(100, "100%")
+            self.playlist_label.setVisible(False)
+
+        except Exception as ex:
+            self.signals.log_message.emit(f"❌ Playlist download error: {ex}")
+            self.signals.status_update.emit(f"❌ Playlist error: {ex}")
+        finally:
+            self.signals.enable_buttons.emit(True, True, True)
+
+    def merge_video_audio_silent(self, video_file, audio_file, idx):
+        """Merge video and audio without detailed status updates (for playlist)"""
+        if not self.ffmpeg_available:
+            return
+
+        try:
+            base_name = os.path.splitext(os.path.basename(video_file))[0].replace(f"video_{idx}_", "")
+            output_file = os.path.join(self.download_dir, f"{base_name}.mp4")
+
+            video_ext = os.path.splitext(video_file)[1].lower()
+
+            if video_ext == '.webm':
+                ffmpeg_cmd = [self.ffmpeg_path, '-i', video_file, '-i', audio_file]
+
+                if self.gpu_info['codec'] == 'h264_nvenc':
+                    ffmpeg_cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23', '-rc', 'vbr'])
+                elif self.gpu_info['codec'] == 'h264_qsv':
+                    ffmpeg_cmd.extend(['-c:v', 'h264_qsv', '-preset', 'medium', '-global_quality', '23'])
+                elif self.gpu_info['codec'] == 'h264_amf':
+                    ffmpeg_cmd.extend(['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'vbr_latency', '-qp_i', '23', '-qp_p', '23'])
+                elif self.gpu_info['codec'] == 'h264_videotoolbox':
+                    ffmpeg_cmd.extend(['-c:v', 'h264_videotoolbox', '-b:v', '5M'])
+                else:
+                    ffmpeg_cmd.extend(['-c:v', 'libx264', '-preset', 'medium', '-crf', '23'])
+
+                ffmpeg_cmd.extend(['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+                                 output_file, '-y', '-hide_banner', '-loglevel', 'error'])
+            else:
+                ffmpeg_cmd = [
+                    self.ffmpeg_path, '-i', video_file, '-i', audio_file,
+                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+                    output_file, '-y', '-hide_banner', '-loglevel', 'error'
+                ]
+
+            creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+            subprocess.run(ffmpeg_cmd, capture_output=True, creationflags=creationflags)
+
+            # Clean up temp files
+            try:
+                os.remove(video_file)
+                os.remove(audio_file)
+            except:
+                pass
+
+        except Exception as e:
+            self.signals.log_message.emit(f"   ⚠️ Merge failed: {str(e)[:50]}")
 
     def do_download(self, selected_resolution):
         """Download selected resolution (runs in thread)"""
@@ -466,6 +713,7 @@ class YouTubeDownloaderWindow(QMainWindow):
                 self.signals.status_update.emit(
                     f"✅ Download complete! Saved as: {os.path.basename(output_file)}"
                 )
+                self.signals.log_message.emit(f"✅ Downloaded: {os.path.basename(output_file)}")
                 self.signals.progress_update.emit(100, "100%")
 
             else:
@@ -479,6 +727,7 @@ class YouTubeDownloaderWindow(QMainWindow):
                 )
 
                 self.signals.status_update.emit(f"✓ Video saved: {os.path.basename(video_file)}")
+                self.signals.log_message.emit(f"✓ Video downloaded: {os.path.basename(video_file)}")
                 self.signals.status_update.emit("Downloading audio...")
                 self.signals.progress_update.emit(0, "0%")
 
@@ -486,6 +735,7 @@ class YouTubeDownloaderWindow(QMainWindow):
 
                 if not audio_stream:
                     self.signals.status_update.emit("⚠️ No audio found. Video saved without audio.")
+                    self.signals.log_message.emit("⚠️ No audio stream available")
                     final_file = video_file.replace("video_", "NO_AUDIO_")
                     if video_file != final_file:
                         os.rename(video_file, final_file)
@@ -498,9 +748,11 @@ class YouTubeDownloaderWindow(QMainWindow):
                 )
 
                 self.signals.status_update.emit(f"✓ Audio saved: {os.path.basename(audio_file)}")
+                self.signals.log_message.emit(f"✓ Audio downloaded: {os.path.basename(audio_file)}")
 
                 if not os.path.exists(video_file) or not os.path.exists(audio_file):
                     self.signals.status_update.emit("❌ Error: Download files missing!")
+                    self.signals.log_message.emit("❌ Error: Download files missing!")
                     self.signals.enable_buttons.emit(True, True, True)
                     return
 
@@ -509,6 +761,7 @@ class YouTubeDownloaderWindow(QMainWindow):
 
         except Exception as ex:
             self.signals.status_update.emit(f"❌ Download error: {ex}")
+            self.signals.log_message.emit(f"❌ Error: {ex}")
         finally:
             self.signals.enable_buttons.emit(True, True, True)
 
@@ -516,6 +769,7 @@ class YouTubeDownloaderWindow(QMainWindow):
         """Merge video and audio with FFmpeg"""
         if not self.ffmpeg_available:
             self.signals.status_update.emit("❌ FFmpeg not available! Cannot merge audio and video.")
+            self.signals.log_message.emit("❌ FFmpeg not available for merging")
             return
 
         try:
@@ -534,6 +788,7 @@ class YouTubeDownloaderWindow(QMainWindow):
 
             if video_ext == '.webm':
                 self.signals.status_update.emit(f"🔄 Converting WebM to MP4 with {encoder_name}...")
+                self.signals.log_message.emit(f"🔄 Converting WebM to MP4...")
 
                 ffmpeg_cmd = [self.ffmpeg_path, '-i', video_file, '-i', audio_file]
 
@@ -593,18 +848,23 @@ class YouTubeDownloaderWindow(QMainWindow):
                     if is_gpu:
                         status += f" (Encoded with {encoder_name})"
                     self.signals.status_update.emit(status)
+                    self.signals.log_message.emit(f"✅ Merged and saved: {os.path.basename(output_file)}")
                     self.signals.progress_update.emit(100, "100%")
                 else:
                     self.signals.status_update.emit("❌ Output file is empty. Check FFmpeg.")
+                    self.signals.log_message.emit("❌ Output file is empty")
             else:
                 error = result.stderr[:200] if result.stderr else "Unknown error"
                 self.signals.status_update.emit(f"❌ FFmpeg failed: {error}")
+                self.signals.log_message.emit(f"❌ FFmpeg failed: {error}")
                 print(f"FFmpeg error: {result.stderr}")
 
         except FileNotFoundError:
             self.signals.status_update.emit("❌ FFmpeg not found! Install: pip install imageio-ffmpeg")
+            self.signals.log_message.emit("❌ FFmpeg not found")
         except Exception as e:
             self.signals.status_update.emit(f"❌ Merge error: {str(e)}")
+            self.signals.log_message.emit(f"❌ Merge error: {str(e)}")
             print(f"Error details: {e}")
 
 

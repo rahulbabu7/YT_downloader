@@ -1,15 +1,14 @@
-name: Build Multi-Platform
+name: Build Multi-Platform with FFmpeg
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
-# Add permissions for the workflow
 permissions:
   contents: write
   packages: write
@@ -17,161 +16,279 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller PySide6 pytubefix certifi
-    
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller YouTubeDownloader_Windows.spec
-    
-    - name: Test executable
-      run: |
-        if (Test-Path "dist/YouTubeDownloader.exe") {
-          Write-Host "✓ EXE created successfully"
-        } else {
-          Write-Error "Build failed - EXE not found"
-          exit 1
-        }
-    
-    - name: Upload Windows artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: YouTubeDownloader-Windows
-        path: dist/YouTubeDownloader.exe
-        retention-days: 30
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download and Extract FFmpeg
+        run: |
+          Write-Host "Downloading FFmpeg..."
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile "ffmpeg.zip"
+
+          Write-Host "Extracting FFmpeg..."
+          Expand-Archive -Path ffmpeg.zip -DestinationPath .
+
+          # Find ffmpeg.exe in the extracted folder
+          $ffmpegExe = Get-ChildItem -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+
+          if ($ffmpegExe) {
+            # Create ffmpeg directory
+            New-Item -ItemType Directory -Force -Path "ffmpeg_bundle"
+            Copy-Item $ffmpegExe.FullName -Destination "ffmpeg_bundle\ffmpeg.exe"
+            Write-Host "✓ FFmpeg copied to ffmpeg_bundle\ffmpeg.exe"
+
+            # Test FFmpeg
+            & "ffmpeg_bundle\ffmpeg.exe" -version
+          } else {
+            Write-Error "FFmpeg.exe not found!"
+            exit 1
+          }
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller PySide6 pytubefix certifi
+
+      - name: Modify spec file to include FFmpeg
+        run: |
+          $specContent = Get-Content "YouTubeDownloader_Windows.spec" -Raw
+          $specContent = $specContent -replace "binaries=\[\]", "binaries=[('ffmpeg_bundle/ffmpeg.exe', '.')]"
+          Set-Content "YouTubeDownloader_Windows.spec" -Value $specContent
+
+          Write-Host "Updated spec file:"
+          Get-Content "YouTubeDownloader_Windows.spec"
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller YouTubeDownloader_Windows.spec
+
+      - name: Verify Build
+        run: |
+          if (Test-Path "dist/YouTubeDownloader.exe") {
+            $size = (Get-Item "dist/YouTubeDownloader.exe").Length / 1MB
+            Write-Host "✓ EXE created successfully"
+            Write-Host "Size: $([math]::Round($size, 2)) MB"
+          } else {
+            Write-Error "Build failed - EXE not found"
+            exit 1
+          }
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeDownloader-Windows
+          path: dist/YouTubeDownloader.exe
+          retention-days: 30
 
   build-macos:
     runs-on: macos-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller PySide6 pytubefix certifi
-    
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller YouTubeDownloader_macOS.spec
-    
-    - name: Create DMG
-      run: |
-        hdiutil create -volname "YouTube Downloader" -srcfolder dist/YouTubeDownloader.app -ov -format UDZO dist/YouTubeDownloader.dmg
-    
-    - name: Upload macOS app
-      uses: actions/upload-artifact@v4
-      with:
-        name: YouTubeDownloader-macOS-app
-        path: dist/YouTubeDownloader.app
-        retention-days: 30
-    
-    - name: Upload macOS DMG
-      uses: actions/upload-artifact@v4
-      with:
-        name: YouTubeDownloader-macOS-dmg
-        path: dist/YouTubeDownloader.dmg
-        retention-days: 30
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install FFmpeg
+        run: |
+          brew install ffmpeg
+
+          # Find FFmpeg binary
+          FFMPEG_PATH=$(which ffmpeg)
+          echo "FFmpeg path: $FFMPEG_PATH"
+
+          # Create bundle directory
+          mkdir -p ffmpeg_bundle
+          cp "$FFMPEG_PATH" ffmpeg_bundle/ffmpeg
+
+          # Verify
+          ./ffmpeg_bundle/ffmpeg -version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller PySide6 pytubefix certifi
+
+      - name: Modify spec file to include FFmpeg
+        run: |
+          # Update the spec file to include FFmpeg
+          sed -i '' "s|binaries=\[\]|binaries=[('ffmpeg_bundle/ffmpeg', '.')]|g" YouTubeDownloader_macOS.spec
+
+          echo "Updated spec file:"
+          cat YouTubeDownloader_macOS.spec
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller YouTubeDownloader_macOS.spec
+
+      - name: Create DMG
+        run: |
+          # Install create-dmg
+          brew install create-dmg || true
+
+          # Create DMG
+          if command -v create-dmg &> /dev/null; then
+            create-dmg \
+              --volname "YouTube Downloader" \
+              --window-pos 200 120 \
+              --window-size 600 400 \
+              --icon-size 100 \
+              --app-drop-link 425 120 \
+              "dist/YouTubeDownloader.dmg" \
+              "dist/YouTubeDownloader.app" || \
+            hdiutil create -volname "YouTube Downloader" -srcfolder dist/YouTubeDownloader.app -ov -format UDZO dist/YouTubeDownloader.dmg
+          else
+            hdiutil create -volname "YouTube Downloader" -srcfolder dist/YouTubeDownloader.app -ov -format UDZO dist/YouTubeDownloader.dmg
+          fi
+
+      - name: Upload macOS app
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeDownloader-macOS-app
+          path: dist/YouTubeDownloader.app
+          retention-days: 30
+
+      - name: Upload macOS DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeDownloader-macOS-dmg
+          path: dist/YouTubeDownloader.dmg
+          retention-days: 30
 
   build-linux:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-    
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libxcb-xinerama0 libxcb-cursor0
-    
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller PySide6 pytubefix certifi
-    
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller YouTubeDownloader_Linux.spec
-    
-    - name: Test executable
-      run: |
-        if [ -f "dist/YouTubeDownloader" ]; then
-          echo "✓ Binary created successfully"
-        else
-          echo "❌ Build failed"
-          exit 1
-        fi
-    
-    - name: Upload Linux binary
-      uses: actions/upload-artifact@v4
-      with:
-        name: YouTubeDownloader-Linux
-        path: dist/YouTubeDownloader
-        retention-days: 30
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxcb-xinerama0 libxcb-cursor0 ffmpeg
+
+      - name: Bundle FFmpeg
+        run: |
+          # Find FFmpeg binary
+          FFMPEG_PATH=$(which ffmpeg)
+          echo "FFmpeg path: $FFMPEG_PATH"
+
+          # Create bundle directory
+          mkdir -p ffmpeg_bundle
+          cp "$FFMPEG_PATH" ffmpeg_bundle/ffmpeg
+          chmod +x ffmpeg_bundle/ffmpeg
+
+          # Verify
+          ./ffmpeg_bundle/ffmpeg -version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller PySide6 pytubefix certifi
+
+      - name: Modify spec file to include FFmpeg
+        run: |
+          # Update the spec file to include FFmpeg
+          sed -i "s|binaries=\[\]|binaries=[('ffmpeg_bundle/ffmpeg', '.')]|g" YouTubeDownloader_Linux.spec
+
+          echo "Updated spec file:"
+          cat YouTubeDownloader_Linux.spec
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller YouTubeDownloader_Linux.spec
+
+      - name: Make executable
+        run: |
+          chmod +x dist/YouTubeDownloader
+
+      - name: Verify Build
+        run: |
+          if [ -f "dist/YouTubeDownloader" ]; then
+            echo "✓ Binary created successfully"
+            ls -lh dist/YouTubeDownloader
+          else
+            echo "❌ Build failed"
+            exit 1
+          fi
+
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouTubeDownloader-Linux
+          path: dist/YouTubeDownloader
+          retention-days: 30
 
   create-release:
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    # Add permissions specifically for this job
     permissions:
       contents: write
-    
+
     steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-    
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: |
-          YouTubeDownloader-Windows/YouTubeDownloader.exe
-          YouTubeDownloader-macOS-dmg/YouTubeDownloader.dmg
-          YouTubeDownloader-Linux/YouTubeDownloader
-        body: |
-          ## YouTube Downloader Release
-          
-          ### Downloads:
-          - **Windows**: YouTubeDownloader.exe
-          - **macOS**: YouTubeDownloader.dmg
-          - **Linux**: YouTubeDownloader
-          
-          ### Requirements:
-          **FFmpeg must be installed separately for video merging:**
-          
-          - **Windows**: Download from [ffmpeg.org](https://ffmpeg.org/download.html) or install via `winget install ffmpeg`
-          - **macOS**: Install via Homebrew: `brew install ffmpeg`
-          - **Linux**: Install via package manager: `sudo apt install ffmpeg` (Ubuntu/Debian) or `sudo dnf install ffmpeg` (Fedora)
-          
-          ### GPU Support:
-          FFmpeg will automatically use GPU encoding if available:
-          - Windows: NVENC (NVIDIA), QSV (Intel), AMF (AMD)
-          - macOS: VideoToolbox (Apple Silicon/Intel)
-          - Linux: NVENC, VAAPI, QSV
-        fail_on_unmatched_files: false
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Display structure
+        run: |
+          echo "Downloaded artifacts:"
+          ls -R
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            YouTubeDownloader-Windows/YouTubeDownloader.exe
+            YouTubeDownloader-macOS-dmg/YouTubeDownloader.dmg
+            YouTubeDownloader-Linux/YouTubeDownloader
+          body: |
+            ## YouTube Downloader Release
+
+            ### 🎉 FFmpeg is now bundled! No separate installation needed!
+
+            ### Downloads:
+            - **Windows**: `YouTubeDownloader.exe` - Includes FFmpeg with GPU support detection
+            - **macOS**: `YouTubeDownloader.dmg` - Includes FFmpeg with VideoToolbox support
+            - **Linux**: `YouTubeDownloader` - Includes FFmpeg with hardware acceleration
+
+            ### Features:
+            - ✅ FFmpeg bundled - works out of the box
+            - 🎮 Automatic GPU encoder detection (NVENC, QSV, AMF, VideoToolbox, VAAPI)
+            - 📋 Full playlist download support
+            - 🎬 Progressive and adaptive stream support
+            - 📊 Real-time progress tracking
+            - 📝 Detailed download logs
+
+            ### Usage:
+            1. Download the appropriate file for your OS
+            2. Run the application (no installation required)
+            3. Paste YouTube URL or playlist URL
+            4. Select quality and download!
+
+            ### GPU Acceleration:
+            The bundled FFmpeg will automatically detect and use your GPU:
+            - **NVIDIA**: NVENC encoder
+            - **Intel**: Quick Sync Video (QSV)
+            - **AMD**: AMF encoder
+            - **Apple Silicon/Intel Mac**: VideoToolbox
+            - **Linux**: VAAPI (Intel/AMD)
+
+            If no GPU encoder is found, it falls back to CPU encoding (libx264).
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
