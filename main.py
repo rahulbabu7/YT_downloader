@@ -17,6 +17,18 @@ else:
     os.environ['SSL_CERT_FILE'] = certifi.where()
     os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 
+# On Windows, a windowed (console=False) exe flashes a console window for every
+# child process. pytubefix spawns node.exe for signature/poToken handling, so
+# hide child consoles globally.
+if platform.system() == 'Windows':
+    _orig_popen_init = subprocess.Popen.__init__
+
+    def _popen_no_window(self, *args, **kwargs):
+        kwargs['creationflags'] = kwargs.get('creationflags', 0) | subprocess.CREATE_NO_WINDOW
+        _orig_popen_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = _popen_no_window
+
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -36,6 +48,7 @@ class DownloadSignals(QObject):
     resolutions_fetched = Signal(list, dict)
     playlist_progress = Signal(int, int, str)  # current, total, video_title
     log_message = Signal(str)
+    playlist_label_visible = Signal(bool)
 
 
 class YouTubeDownloaderWindow(QMainWindow):
@@ -52,6 +65,7 @@ class YouTubeDownloaderWindow(QMainWindow):
         self.signals.resolutions_fetched.connect(self.populate_resolutions)
         self.signals.playlist_progress.connect(self.update_playlist_progress)
         self.signals.log_message.connect(self.add_log_message)
+        self.signals.playlist_label_visible.connect(lambda v: self.playlist_label.setVisible(v))
 
         # Storage
         self.available_streams = {}
@@ -298,27 +312,80 @@ class YouTubeDownloaderWindow(QMainWindow):
             )
             encoders = result.stdout.lower()
 
-            if 'h264_nvenc' in encoders:
-                print("🎮 Detected: NVIDIA NVENC GPU encoder")
-                return {'name': 'NVIDIA NVENC', 'codec': 'h264_nvenc', 'preset': 'p4'}
-            elif 'h264_qsv' in encoders:
-                print("🎮 Detected: Intel Quick Sync GPU encoder")
-                return {'name': 'Intel Quick Sync', 'codec': 'h264_qsv', 'preset': 'medium'}
-            elif 'h264_amf' in encoders:
-                print("🎮 Detected: AMD AMF GPU encoder")
-                return {'name': 'AMD AMF', 'codec': 'h264_amf', 'preset': 'balanced'}
-            elif 'h264_vaapi' in encoders:
-                print("🎮 Detected: VAAPI hardware encoder (Intel/AMD)")
-                return {'name': 'VAAPI (Hardware)', 'codec': 'h264_vaapi', 'preset': None}
-            elif 'h264_videotoolbox' in encoders and platform.system() == 'Darwin':
-                print("🎮 Detected: Apple VideoToolbox encoder")
-                return {'name': 'Apple VideoToolbox', 'codec': 'h264_videotoolbox', 'preset': None}
-            else:
-                print("💻 No GPU encoder found, using CPU (libx264)")
-                return {'name': 'CPU (Software)', 'codec': 'libx264', 'preset': 'medium'}
+            # An encoder being compiled into FFmpeg doesn't mean the hardware
+            # exists (e.g. Windows builds ship nvenc/qsv/amf). Test each one.
+            candidates = [
+                ('h264_nvenc', 'NVIDIA NVENC', 'p4'),
+                ('h264_qsv', 'Intel Quick Sync', 'medium'),
+                ('h264_amf', 'AMD AMF', 'balanced'),
+            ]
+            if platform.system() == 'Darwin':
+                candidates.append(('h264_videotoolbox', 'Apple VideoToolbox', None))
+
+            for codec, name, preset in candidates:
+                if codec in encoders and self._encoder_works(codec):
+                    print(f"🎮 Detected working GPU encoder: {name}")
+                    return {'name': name, 'codec': codec, 'preset': preset}
+
+            print("💻 No working GPU encoder found, using CPU (libx264)")
+            return {'name': 'CPU (Software)', 'codec': 'libx264', 'preset': 'medium'}
         except Exception as e:
             print(f"GPU detection error: {e}")
             return {'name': 'CPU (Software)', 'codec': 'libx264', 'preset': 'medium'}
+
+    def _encoder_works(self, codec):
+        """Encode a few blank frames to verify the encoder actually runs on this machine"""
+        try:
+            creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+            result = subprocess.run(
+                [self.ffmpeg_path, '-hide_banner', '-loglevel', 'error',
+                 '-f', 'lavfi', '-i', 'color=c=black:s=256x256:d=0.2',
+                 '-frames:v', '3', '-c:v', codec, '-f', 'null', '-'],
+                capture_output=True, timeout=10, creationflags=creationflags
+            )
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def _video_codec_args(self, codec):
+        """FFmpeg video encoding args for the given codec"""
+        if codec == 'h264_nvenc':
+            return ['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23', '-rc', 'vbr']
+        if codec == 'h264_qsv':
+            return ['-c:v', 'h264_qsv', '-preset', 'medium', '-global_quality', '23']
+        if codec == 'h264_amf':
+            return ['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'vbr_latency', '-qp_i', '23', '-qp_p', '23']
+        if codec == 'h264_videotoolbox':
+            return ['-c:v', 'h264_videotoolbox', '-b:v', '5M']
+        return ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23']
+
+    def run_merge(self, video_file, audio_file, output_file):
+        """Merge video + audio into MP4. Re-encodes WebM (GPU first, CPU fallback).
+        Returns (success, stderr)."""
+        creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
+        tail = ['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+                output_file, '-y', '-hide_banner', '-loglevel', 'error']
+
+        if os.path.splitext(video_file)[1].lower() == '.webm':
+            codecs = [self.gpu_info['codec']]
+            if codecs[0] != 'libx264':
+                codecs.append('libx264')
+        else:
+            codecs = ['copy']
+
+        stderr = ''
+        for codec in codecs:
+            video_args = ['-c:v', 'copy'] if codec == 'copy' else self._video_codec_args(codec)
+            cmd = [self.ffmpeg_path, '-i', video_file, '-i', audio_file,
+                   '-map', '0:v:0', '-map', '1:a:0'] + video_args + tail
+            result = subprocess.run(cmd, capture_output=True, text=True,
+                                    encoding='utf-8', errors='replace',
+                                    creationflags=creationflags)
+            if result.returncode == 0 and os.path.exists(output_file) and os.path.getsize(output_file) > 1000:
+                return True, ''
+            stderr = result.stderr or 'Unknown error'
+            print(f"FFmpeg ({codec}) failed: {stderr}")
+        return False, stderr
 
     def browse_directory(self):
         """Open directory browser"""
@@ -350,11 +417,19 @@ class YouTubeDownloaderWindow(QMainWindow):
         """Populate resolution combo box"""
         self.resolution_combo.clear()
         self.available_streams = streams
-        for option in options:
+        first_selectable = -1
+        for i, option in enumerate(options):
             self.resolution_combo.addItem(option)
+            if option.startswith('---'):
+                # Section header: make it non-selectable
+                item = self.resolution_combo.model().item(i)
+                if item is not None:
+                    item.setEnabled(False)
+            elif first_selectable < 0:
+                first_selectable = i
 
-        if options:
-            self.resolution_combo.setCurrentIndex(0)
+        if first_selectable >= 0:
+            self.resolution_combo.setCurrentIndex(first_selectable)
             self.signals.enable_buttons.emit(True, True, True)
 
     def on_progress(self, stream, chunk, bytes_remaining):
@@ -387,11 +462,28 @@ class YouTubeDownloaderWindow(QMainWindow):
         thread = threading.Thread(target=self.fetch_resolutions, args=(url,), daemon=True)
         thread.start()
 
+    @staticmethod
+    def is_playlist_url(url):
+        """True for real playlists. A watch URL with an auto-generated mix
+        (list=RD...) is treated as a single video since mixes can't be loaded
+        as playlists."""
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(url)
+        list_id = parse_qs(parsed.query).get('list', [''])[0]
+        if parsed.path.startswith('/playlist'):
+            return bool(list_id)
+        if not list_id:
+            return False
+        has_video = 'v' in parse_qs(parsed.query) or 'youtu.be' in parsed.netloc
+        if has_video and list_id.startswith('RD'):
+            return False
+        return True
+
     def fetch_resolutions(self, url):
         """Fetch available resolutions (runs in thread)"""
         try:
             # Check if URL is a playlist
-            if 'list=' in url or '/playlist' in url:
+            if self.is_playlist_url(url):
                 self.is_playlist = True
                 self.signals.log_message.emit("📋 Detected playlist URL")
                 self.signals.status_update.emit("Loading playlist...")
@@ -691,9 +783,11 @@ class YouTubeDownloaderWindow(QMainWindow):
                                 )
 
                                 # Merge
-                                self.merge_video_audio_silent(video_file, audio_file, idx)
-                                self.signals.log_message.emit(f"   ✅ Downloaded & merged")
-                                successful += 1
+                                if self.merge_video_audio_silent(video_file, audio_file, idx):
+                                    self.signals.log_message.emit(f"   ✅ Downloaded & merged")
+                                    successful += 1
+                                else:
+                                    failed += 1
                             else:
                                 self.signals.log_message.emit(f"   ⚠️ Downloaded (no audio available)")
                                 successful += 1
@@ -717,7 +811,7 @@ class YouTubeDownloaderWindow(QMainWindow):
                 f"✅ Playlist complete: {successful} downloaded, {failed} failed"
             )
             self.signals.progress_update.emit(100, "100%")
-            self.playlist_label.setVisible(False)
+            self.signals.playlist_label_visible.emit(False)
 
         except Exception as ex:
             self.signals.log_message.emit(f"❌ Playlist download error: {ex}")
@@ -790,49 +884,30 @@ class YouTubeDownloaderWindow(QMainWindow):
     def merge_video_audio_silent(self, video_file, audio_file, idx):
         """Merge video and audio without detailed status updates (for playlist)"""
         if not self.ffmpeg_available:
-            return
+            return False
 
         try:
-            creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
-            base_name = os.path.splitext(os.path.basename(video_file))[0].replace(f"video_{idx}_", "")
+            base_name = self._strip_prefix(os.path.splitext(os.path.basename(video_file))[0], f"video_{idx}_")
             output_file = os.path.join(self.download_dir, f"{base_name}.mp4")
 
-            video_ext = os.path.splitext(video_file)[1].lower()
-
-            if video_ext == '.webm':
-                ffmpeg_cmd = [self.ffmpeg_path, '-i', video_file, '-i', audio_file]
-
-                if self.gpu_info['codec'] == 'h264_nvenc':
-                    ffmpeg_cmd.extend(['-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '23', '-rc', 'vbr'])
-                elif self.gpu_info['codec'] == 'h264_qsv':
-                    ffmpeg_cmd.extend(['-c:v', 'h264_qsv', '-preset', 'medium', '-global_quality', '23'])
-                elif self.gpu_info['codec'] == 'h264_amf':
-                    ffmpeg_cmd.extend(['-c:v', 'h264_amf', '-quality', 'balanced', '-rc', 'vbr_latency', '-qp_i', '23', '-qp_p', '23'])
-                elif self.gpu_info['codec'] == 'h264_videotoolbox':
-                    ffmpeg_cmd.extend(['-c:v', 'h264_videotoolbox', '-b:v', '5M'])
-                else:
-                    ffmpeg_cmd.extend(['-c:v', 'libx264', '-preset', 'medium', '-crf', '23'])
-
-                ffmpeg_cmd.extend(['-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
-                                 output_file, '-y', '-hide_banner', '-loglevel', 'error'])
+            ok, err = self.run_merge(video_file, audio_file, output_file)
+            if ok:
+                for f in (video_file, audio_file):
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
             else:
-                ffmpeg_cmd = [
-                    self.ffmpeg_path, '-i', video_file, '-i', audio_file,
-                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-                    output_file, '-y', '-hide_banner', '-loglevel', 'error'
-                ]
-
-            subprocess.run(ffmpeg_cmd, capture_output=True, creationflags=creationflags)
-
-            # Clean up temp files
-            try:
-                os.remove(video_file)
-                os.remove(audio_file)
-            except:
-                pass
+                self.signals.log_message.emit(f"   ⚠️ Merge failed: {err[:100]}")
+            return ok
 
         except Exception as e:
             self.signals.log_message.emit(f"   ⚠️ Merge failed: {str(e)[:50]}")
+            return False
+
+    @staticmethod
+    def _strip_prefix(name, prefix):
+        return name[len(prefix):] if name.startswith(prefix) else name
 
     def do_download(self, selected_resolution):
         """Download selected resolution (runs in thread)"""
@@ -913,7 +988,8 @@ class YouTubeDownloaderWindow(QMainWindow):
                 if not audio_stream:
                     self.signals.status_update.emit("⚠️ No audio found. Video saved without audio.")
                     self.signals.log_message.emit("⚠️ No audio stream available")
-                    final_file = video_file.replace("video_", "NO_AUDIO_")
+                    final_file = os.path.join(os.path.dirname(video_file),
+                                              "NO_AUDIO_" + self._strip_prefix(os.path.basename(video_file), "video_"))
                     if video_file != final_file:
                         os.rename(video_file, final_file)
                     self.signals.enable_buttons.emit(True, True, True)
@@ -950,94 +1026,37 @@ class YouTubeDownloaderWindow(QMainWindow):
             return
 
         try:
-            creationflags = subprocess.CREATE_NO_WINDOW if platform.system() == 'Windows' else 0
             encoder_name = self.gpu_info['name']
             is_gpu = self.gpu_info['codec'] != 'libx264'
+            is_webm = os.path.splitext(video_file)[1].lower() == '.webm'
 
-            if is_gpu:
-                self.signals.status_update.emit(f"🎮 Merging with {encoder_name} (GPU-accelerated)...")
+            if is_webm:
+                self.signals.status_update.emit(f"🔄 Converting WebM to MP4 with {encoder_name}...")
+                self.signals.log_message.emit("🔄 Converting WebM to MP4...")
             else:
                 self.signals.status_update.emit("🔄 Merging video + audio with FFmpeg...")
 
-            base_name = os.path.splitext(os.path.basename(video_file))[0].replace("video_", "")
+            base_name = self._strip_prefix(os.path.splitext(os.path.basename(video_file))[0], "video_")
             output_file = os.path.join(self.download_dir, f"{base_name}.mp4")
 
-            video_ext = os.path.splitext(video_file)[1].lower()
+            ok, err = self.run_merge(video_file, audio_file, output_file)
 
-            if video_ext == '.webm':
-                self.signals.status_update.emit(f"🔄 Converting WebM to MP4 with {encoder_name}...")
-                self.signals.log_message.emit(f"🔄 Converting WebM to MP4...")
-
-                ffmpeg_cmd = [self.ffmpeg_path, '-i', video_file, '-i', audio_file]
-
-                # Add GPU-specific encoding parameters
-                if self.gpu_info['codec'] == 'h264_nvenc':
-                    ffmpeg_cmd.extend([
-                        '-c:v', 'h264_nvenc', '-preset', 'p4',
-                        '-cq', '23', '-rc', 'vbr',
-                    ])
-                elif self.gpu_info['codec'] == 'h264_qsv':
-                    ffmpeg_cmd.extend([
-                        '-c:v', 'h264_qsv', '-preset', 'medium',
-                        '-global_quality', '23',
-                    ])
-                elif self.gpu_info['codec'] == 'h264_amf':
-                    ffmpeg_cmd.extend([
-                        '-c:v', 'h264_amf', '-quality', 'balanced',
-                        '-rc', 'vbr_latency', '-qp_i', '23', '-qp_p', '23',
-                    ])
-                elif self.gpu_info['codec'] == 'h264_videotoolbox':
-                    ffmpeg_cmd.extend([
-                        '-c:v', 'h264_videotoolbox', '-b:v', '5M',
-                    ])
-                else:
-                    ffmpeg_cmd.extend([
-                        '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
-                    ])
-
-                ffmpeg_cmd.extend([
-                    '-c:a', 'aac', '-b:a', '192k',
-                    '-movflags', '+faststart',
-                    output_file, '-y', '-hide_banner', '-loglevel', 'error'
-                ])
-            else:
-                # MP4 - just copy
-                ffmpeg_cmd = [
-                    self.ffmpeg_path, '-i', video_file, '-i', audio_file,
-                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
-                    output_file, '-y', '-hide_banner', '-loglevel', 'error'
-                ]
-
-            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, creationflags=creationflags)
-
-            if result.returncode == 0 and os.path.exists(output_file):
-                if os.path.getsize(output_file) > 1000:
-                    # Clean up temp files
+            if ok:
+                for f in (video_file, audio_file):
                     try:
-                        os.remove(video_file)
-                        os.remove(audio_file)
-                    except:
+                        os.remove(f)
+                    except OSError:
                         pass
-
-                    encoder_emoji = "🎮" if is_gpu else "✅"
-                    status = f"{encoder_emoji} Download complete! Saved as: {os.path.basename(output_file)}"
-                    if is_gpu:
-                        status += f" (Encoded with {encoder_name})"
-                    self.signals.status_update.emit(status)
-                    self.signals.log_message.emit(f"✅ Merged and saved: {os.path.basename(output_file)}")
-                    self.signals.progress_update.emit(100, "100%")
-                else:
-                    self.signals.status_update.emit("❌ Output file is empty. Check FFmpeg.")
-                    self.signals.log_message.emit("❌ Output file is empty")
+                status = f"✅ Download complete! Saved as: {os.path.basename(output_file)}"
+                if is_webm and is_gpu:
+                    status += f" (Encoded with {encoder_name})"
+                self.signals.status_update.emit(status)
+                self.signals.log_message.emit(f"✅ Merged and saved: {os.path.basename(output_file)}")
+                self.signals.progress_update.emit(100, "100%")
             else:
-                error = result.stderr[:200] if result.stderr else "Unknown error"
-                self.signals.status_update.emit(f"❌ FFmpeg failed: {error}")
-                self.signals.log_message.emit(f"❌ FFmpeg failed: {error}")
-                print(f"FFmpeg error: {result.stderr}")
+                self.signals.status_update.emit(f"❌ FFmpeg failed: {err[:200]}")
+                self.signals.log_message.emit(f"❌ FFmpeg failed: {err[:200]}")
 
-        except FileNotFoundError:
-            self.signals.status_update.emit("❌ FFmpeg not found! Install: pip install imageio-ffmpeg")
-            self.signals.log_message.emit("❌ FFmpeg not found")
         except Exception as e:
             self.signals.status_update.emit(f"❌ Merge error: {str(e)}")
             self.signals.log_message.emit(f"❌ Merge error: {str(e)}")
