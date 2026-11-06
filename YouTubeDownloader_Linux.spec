@@ -1,26 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-import certifi
+import os, sys
+sys.path.insert(0, SPECPATH)
+from spec_common import binaries, datas, hiddenimports, upx_exclude
 
 block_cipher = None
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[
-        (certifi.where(), 'certifi'),  # Add this line
-    ],
-    hiddenimports=[
-        'PySide6.QtCore',
-        'PySide6.QtGui',
-        'PySide6.QtWidgets',
-        'pytubefix',
-        'pytubefix.cipher',
-        'pytubefix.extract',
-        'pytubefix.request',
-        'pytubefix.monostate',
-        'certifi',  # Add this
-    ],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -45,7 +35,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=upx_exclude,
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,

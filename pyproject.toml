@@ -8,5 +8,5 @@ dependencies = [
     "certifi>=2025.11.12",
     "pyinstaller>=6.17.0",
     "pyside6>=6.10.0",
-    "pytubefix>=10.3.4",
+    "pytubefix>=11.2.1",
 ]

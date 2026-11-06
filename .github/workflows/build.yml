@@ -53,16 +53,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PySide6 pytubefix certifi
-
-      - name: Modify spec file to include FFmpeg
-        run: |
-          $specContent = Get-Content "YouTubeDownloader_Windows.spec" -Raw
-          $specContent = $specContent -replace "binaries=\[\]", "binaries=[('ffmpeg_bundle/ffmpeg.exe', '.')]"
-          Set-Content "YouTubeDownloader_Windows.spec" -Value $specContent
-
-          Write-Host "Updated spec file:"
-          Get-Content "YouTubeDownloader_Windows.spec"
+          pip install pyinstaller PySide6 "pytubefix>=11.2.1" certifi
 
       - name: Build with PyInstaller
         run: |
@@ -116,15 +107,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PySide6 pytubefix certifi
-
-      - name: Modify spec file to include FFmpeg
-        run: |
-          # Update the spec file to include FFmpeg
-          sed -i '' "s|binaries=\[\]|binaries=[('ffmpeg_bundle/ffmpeg', '.')]|g" YouTubeDownloader_macOS.spec
-
-          echo "Updated spec file:"
-          cat YouTubeDownloader_macOS.spec
+          pip install pyinstaller PySide6 "pytubefix>=11.2.1" certifi
 
       - name: Build with PyInstaller
         run: |
@@ -198,15 +181,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller PySide6 pytubefix certifi
-
-      - name: Modify spec file to include FFmpeg
-        run: |
-          # Update the spec file to include FFmpeg
-          sed -i "s|binaries=\[\]|binaries=[('ffmpeg_bundle/ffmpeg', '.')]|g" YouTubeDownloader_Linux.spec
-
-          echo "Updated spec file:"
-          cat YouTubeDownloader_Linux.spec
+          pip install pyinstaller PySide6 "pytubefix>=11.2.1" certifi
 
       - name: Build with PyInstaller
         run: |
